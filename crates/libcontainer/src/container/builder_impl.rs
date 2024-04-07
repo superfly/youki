@@ -1,7 +1,7 @@
 use super::{Container, ContainerStatus};
 use crate::{
     error::{LibcontainerError, MissingSpecError},
-    hooks,
+    hooks::{self, HookOverrides},
     notify_socket::NotifyListener,
     process::{
         self,
@@ -48,6 +48,8 @@ pub(super) struct ContainerBuilderImpl {
     pub detached: bool,
     /// Default executes the specified execution of a generic command
     pub executor: Box<dyn Executor>,
+    /// Hook override functions
+    pub hook_overrides: Option<HookOverrides>,
 }
 
 impl ContainerBuilderImpl {
@@ -86,7 +88,13 @@ impl ContainerBuilderImpl {
 
         if matches!(self.container_type, ContainerType::InitContainer) {
             if let Some(hooks) = self.spec.hooks() {
-                hooks::run_hooks(hooks.create_runtime().as_ref(), self.container.as_ref())?
+                hooks::run_hooks(
+                    hooks.create_runtime().as_ref(),
+                    self.container.as_ref(),
+                    self.hook_overrides
+                        .as_ref()
+                        .map(|hooks| &hooks.create_runtime),
+                )?
             }
         }
 
@@ -153,6 +161,7 @@ impl ContainerBuilderImpl {
             cgroup_config,
             detached: self.detached,
             executor: self.executor.clone(),
+            hook_overrides: self.hook_overrides.clone(),
         };
 
         let (init_pid, need_to_clean_up_intel_rdt_dir) =

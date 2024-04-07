@@ -1,5 +1,5 @@
 use super::{Container, ContainerStatus};
-use crate::hooks;
+use crate::hooks::{self, HookOverrides};
 use crate::process::intel_rdt::delete_resctrl_subdirectory;
 use crate::{config::YoukiConfig, error::LibcontainerError};
 use libcgroups::{self, common::CgroupManager};
@@ -27,7 +27,11 @@ impl Container {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn delete(&mut self, force: bool) -> Result<(), LibcontainerError> {
+    pub fn delete(
+        &mut self,
+        force: bool,
+        overrides: Option<&HookOverrides>,
+    ) -> Result<(), LibcontainerError> {
         self.refresh_status()?;
 
         tracing::debug!("container status: {:?}", self.status());
@@ -94,7 +98,12 @@ impl Container {
                     })?;
 
                     if let Some(hooks) = config.hooks.as_ref() {
-                        hooks::run_hooks(hooks.poststop().as_ref(), Some(self)).map_err(|err| {
+                        hooks::run_hooks(
+                            hooks.poststop().as_ref(),
+                            Some(self),
+                            overrides.map(|hooks| &hooks.poststop),
+                        )
+                        .map_err(|err| {
                             tracing::error!(err = ?err, "failed to run post stop hooks");
                             err
                         })?;

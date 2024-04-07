@@ -12,6 +12,6 @@ pub fn delete(args: Delete, root_path: PathBuf) -> Result<()> {
 
     let mut container = load_container(root_path, &args.container_id)?;
     container
-        .delete(args.force)
+        .delete(args.force, None)
         .with_context(|| format!("failed to delete container {}", args.container_id))
 }

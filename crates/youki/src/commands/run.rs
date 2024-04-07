@@ -28,7 +28,7 @@ pub fn run(args: Run, root_path: PathBuf, systemd_cgroup: bool) -> Result<i32> {
         .build()?;
 
     container
-        .start()
+        .start(None)
         .with_context(|| format!("failed to start container {}", args.container_id))?;
 
     if args.detach {
@@ -44,7 +44,7 @@ pub fn run(args: Run, root_path: PathBuf, systemd_cgroup: bool) -> Result<i32> {
     );
     let foreground_result = handle_foreground(container.pid().unwrap());
     // execute the destruction action after the container finishes running
-    container.delete(true)?;
+    container.delete(true, None)?;
     // return result
     foreground_result
 }

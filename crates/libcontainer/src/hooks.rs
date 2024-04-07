@@ -1,15 +1,21 @@
 use nix::{sys::signal, unistd::Pid};
 use oci_spec::runtime::Hook;
 use std::{
+    borrow::BorrowMut,
     collections::HashMap,
-    io::ErrorKind,
-    io::Write,
+    io::{ErrorKind, Write},
     os::unix::prelude::CommandExt,
-    process::{self},
+    path::PathBuf,
+    process,
+    rc::Rc,
+    sync::Arc,
     thread, time,
 };
 
-use crate::{container::Container, utils};
+use crate::{
+    container::{Container, State},
+    utils,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
@@ -31,11 +37,19 @@ pub enum HookError {
 
 type Result<T> = std::result::Result<T, HookError>;
 
-pub fn run_hooks(hooks: Option<&Vec<Hook>>, container: Option<&Container>) -> Result<()> {
+pub fn run_hooks(
+    hooks: Option<&Vec<Hook>>,
+    container: Option<&Container>,
+    overrides: Option<&FnHooks>,
+) -> Result<()> {
     let state = &(container.ok_or(HookError::MissingContainerState)?.state);
 
     if let Some(hooks) = hooks {
         for hook in hooks {
+            if let Some(hook_fn) = overrides.and_then(|map| map.get(hook.path())) {
+                hook_fn.as_ref()(state);
+                continue;
+            }
             let mut hook_command = process::Command::new(hook.path());
             // Based on OCI spec, the first argument of the args vector is the
             // arg0, which can be different from the path.  For example, path
@@ -133,6 +147,37 @@ pub fn run_hooks(hooks: Option<&Vec<Hook>>, container: Option<&Container>) -> Re
     Ok(())
 }
 
+pub type FnHook = Rc<dyn Fn(&State)>;
+pub type FnHooks = HashMap<PathBuf, FnHook>;
+
+#[derive(Clone)]
+pub struct HookOverrides {
+    /// CreateRuntime is a list of hooks to be run after the container has
+    /// been created but before `pivot_root` or any equivalent
+    /// operation has been called. It is called in the Runtime
+    /// Namespace.
+    pub create_runtime: FnHooks,
+
+    /// CreateContainer is a list of hooks to be run after the container has
+    /// been created but before `pivot_root` or any equivalent
+    /// operation has been called. It is called in the
+    /// Container Namespace.
+    pub create_container: FnHooks,
+
+    /// StartContainer is a list of hooks to be run after the start
+    /// operation is called but before the container process is
+    /// started. It is called in the Container Namespace.
+    pub start_container: FnHooks,
+
+    /// Poststart is a list of hooks to be run after the container process
+    /// is started. It is called in the Runtime Namespace.
+    pub poststart: FnHooks,
+
+    /// Poststop is a list of hooks to be run after the container process
+    /// exits. It is called in the Runtime Namespace.
+    pub poststop: FnHooks,
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -165,7 +210,7 @@ mod test {
     fn test_run_hook() -> Result<()> {
         {
             let default_container: Container = Default::default();
-            run_hooks(None, Some(&default_container)).context("Failed simple test")?;
+            run_hooks(None, Some(&default_container), None).context("Failed simple test")?;
         }
 
         {
@@ -174,7 +219,7 @@ mod test {
 
             let hook = HookBuilder::default().path("true").build()?;
             let hooks = Some(vec![hook]);
-            run_hooks(hooks.as_ref(), Some(&default_container)).context("Failed true")?;
+            run_hooks(hooks.as_ref(), Some(&default_container), None).context("Failed true")?;
         }
 
         {
@@ -194,7 +239,37 @@ mod test {
                 .env(vec![String::from("key=value")])
                 .build()?;
             let hooks = Some(vec![hook]);
-            run_hooks(hooks.as_ref(), Some(&default_container)).context("Failed printenv test")?;
+            run_hooks(hooks.as_ref(), Some(&default_container), None)
+                .context("Failed printenv test")?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_run_hook_overrides() -> Result<()> {
+        {
+            let default_container: Container = Default::default();
+            let hook = HookBuilder::default().path("override_me").build()?;
+            let hooks = Some(vec![hook]);
+
+            let mut overrides = HashMap::new();
+
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            overrides.insert(
+                PathBuf::from("override_me"),
+                Rc::new(move |state: &_| {
+                    println!("in hook, state: {state:?}");
+                    tx.send("hello").unwrap();
+                }) as FnHook,
+            );
+
+            run_hooks(hooks.as_ref(), Some(&default_container), Some(&overrides))
+                .context("Failed printenv test")?;
+
+            assert_eq!(rx.recv().unwrap(), "hello");
         }
 
         Ok(())
@@ -217,7 +292,7 @@ mod test {
             .timeout(1)
             .build()?;
         let hooks = Some(vec![hook]);
-        match run_hooks(hooks.as_ref(), Some(&default_container)) {
+        match run_hooks(hooks.as_ref(), Some(&default_container), None) {
             Ok(_) => {
                 bail!("The test expects the hook to error out with timeout. Should not execute cleanly");
             }

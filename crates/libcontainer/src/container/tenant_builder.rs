@@ -141,6 +141,7 @@ impl TenantContainerBuilder {
             preserve_fds: self.base.preserve_fds,
             detached: self.detached,
             executor: self.base.executor,
+            hook_overrides: self.base.hook_overrides,
         };
 
         let pid = builder_impl.create()?;

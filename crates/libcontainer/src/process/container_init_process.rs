@@ -317,7 +317,14 @@ pub fn container_init_process(
         // create_container hook needs to be called after the namespace setup, but
         // before pivot_root is called. This runs in the container namespaces.
         if let Some(hooks) = hooks {
-            hooks::run_hooks(hooks.create_container().as_ref(), container).map_err(|err| {
+            hooks::run_hooks(
+                hooks.create_container().as_ref(),
+                container,
+                args.hook_overrides
+                    .as_ref()
+                    .map(|hooks| &hooks.create_container),
+            )
+            .map_err(|err| {
                 tracing::error!(?err, "failed to run create container hooks");
                 InitProcessError::Hooks(err)
             })?;
@@ -628,7 +635,14 @@ pub fn container_init_process(
     // before pivot_root is called. This runs in the container namespaces.
     if matches!(args.container_type, ContainerType::InitContainer) {
         if let Some(hooks) = hooks {
-            hooks::run_hooks(hooks.start_container().as_ref(), container).map_err(|err| {
+            hooks::run_hooks(
+                hooks.start_container().as_ref(),
+                container,
+                args.hook_overrides
+                    .as_ref()
+                    .map(|hooks| &hooks.start_container),
+            )
+            .map_err(|err| {
                 tracing::error!(?err, "failed to run start container hooks");
                 err
             })?;

@@ -11,6 +11,6 @@ use liboci_cli::Start;
 pub fn start(args: Start, root_path: PathBuf) -> Result<()> {
     let mut container = load_container(root_path, &args.container_id)?;
     container
-        .start()
+        .start(None)
         .with_context(|| format!("failed to start container {}", args.container_id))
 }

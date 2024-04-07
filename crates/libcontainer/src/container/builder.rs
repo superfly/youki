@@ -1,4 +1,5 @@
 use crate::error::{ErrInvalidID, LibcontainerError};
+use crate::hooks::HookOverrides;
 use crate::syscall::syscall::SyscallType;
 use crate::utils::PathBufExt;
 use crate::workload::{self, Executor};
@@ -23,6 +24,9 @@ pub struct ContainerBuilder {
     /// The function that actually runs on the container init process. Default
     /// is to execute the specified command in the oci spec.
     pub(super) executor: Box<dyn Executor>,
+
+    /// Hook override functions
+    pub(super) hook_overrides: Option<HookOverrides>,
 }
 
 /// Builder that can be used to configure the common properties of
@@ -69,6 +73,7 @@ impl ContainerBuilder {
             console_socket: None,
             preserve_fds: 0,
             executor: workload::default::get_executor(),
+            hook_overrides: None,
         }
     }
 
@@ -254,6 +259,11 @@ impl ContainerBuilder {
     /// ```
     pub fn with_executor(mut self, executor: impl Executor + 'static) -> Self {
         self.executor = Box::new(executor);
+        self
+    }
+
+    pub fn with_hook_overrides(mut self, hook_overrides: HookOverrides) -> Self {
+        self.hook_overrides = Some(hook_overrides);
         self
     }
 }

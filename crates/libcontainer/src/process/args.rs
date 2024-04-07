@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::container::Container;
+use crate::hooks::HookOverrides;
 use crate::notify_socket::NotifyListener;
 use crate::syscall::syscall::SyscallType;
 use crate::user_ns::UserNamespaceConfig;
@@ -41,4 +42,7 @@ pub struct ContainerArgs {
     pub detached: bool,
     /// Manage the functions that actually run on the container
     pub executor: Box<dyn Executor>,
+
+    /// Hook override functions
+    pub hook_overrides: Option<HookOverrides>,
 }
