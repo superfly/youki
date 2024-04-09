@@ -37,6 +37,12 @@ pub enum InitProcessError {
     MountPathReadonly(#[source] SyscallError),
     #[error("failed to mount path as masked")]
     MountPathMasked(#[source] SyscallError),
+    #[error("failed to gather mount information before moving root")]
+    MountInfo(procfs::ProcError),
+    #[error("could not find mountinfo for root mount")]
+    MissingRootMount,
+    #[error("could not mount move root")]
+    MountMoveRoot(SyscallError),
     #[error(transparent)]
     Namespaces(#[from] NamespaceError),
     #[error("failed to set hostname")]
@@ -372,11 +378,38 @@ pub fn container_init_process(
         // use simple chroot. Scary things will happen if you try to pivot_root
         // in the host mount namespace...
         if namespaces.get(LinuxNamespaceType::Mount)?.is_some() {
-            // change the root of filesystem of the process to the rootfs
-            syscall.pivot_rootfs(rootfs_path).map_err(|err| {
-                tracing::error!(?err, ?rootfs_path, "failed to pivot root");
-                InitProcessError::SyscallOther(err)
-            })?;
+            if procfs::mounts()
+                .map_err(InitProcessError::MountInfo)?
+                .first()
+                .ok_or(InitProcessError::MissingRootMount)?
+                .fs_vfstype
+                == "rootfs"
+            {
+                tracing::debug!(
+                    "root is a initramfs, using mount w/ MS_MOVE + chroot instead of pivot_root"
+                );
+                unistd::chdir(rootfs_path).map_err(InitProcessError::NixOther)?;
+                syscall
+                    .mount(
+                        Some(rootfs_path),
+                        Path::new("/"),
+                        None,
+                        MsFlags::MS_MOVE,
+                        None,
+                    )
+                    .map_err(InitProcessError::MountMoveRoot)?;
+                syscall.chroot(Path::new(".")).map_err(|err| {
+                    tracing::error!(?err, ?rootfs_path, "failed to chroot");
+                    InitProcessError::SyscallOther(err)
+                })?;
+                unistd::chdir("/").map_err(InitProcessError::NixOther)?;
+            } else {
+                // change the root of filesystem of the process to the rootfs
+                syscall.pivot_rootfs(rootfs_path).map_err(|err| {
+                    tracing::error!(?err, ?rootfs_path, "failed to pivot root");
+                    InitProcessError::SyscallOther(err)
+                })?;
+            }
         } else {
             syscall.chroot(rootfs_path).map_err(|err| {
                 tracing::error!(?err, ?rootfs_path, "failed to chroot");

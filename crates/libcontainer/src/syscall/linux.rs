@@ -2,7 +2,6 @@
 use caps::{CapSet, CapsHashSet};
 use libc::{c_char, setdomainname, uid_t};
 use nix::fcntl;
-use nix::unistd::chdir;
 use nix::{
     fcntl::{open, OFlag},
     mount::{mount, umount2, MntFlags, MsFlags},
@@ -260,23 +259,6 @@ impl Syscall for LinuxSyscall {
                 errno
             })?;
 
-        fchdir(newroot).map_err(|errno| {
-            tracing::error!(?errno, ?path, "failed to fchdir to new root for pivot root");
-            errno
-        })?;
-
-        mount(
-            Some(path),
-            "/",
-            None::<&str>,
-            MsFlags::MS_MOVE,
-            None::<&str>,
-        )?;
-        chroot(".")?;
-        chdir("/")?;
-
-        return Ok(());
-
         // make the given path as the root directory for the container
         // see https://man7.org/linux/man-pages/man2/pivot_root.2.html, specially the notes
         // pivot root usually changes the root directory to first argument, and then mounts the original root
@@ -285,7 +267,7 @@ impl Syscall for LinuxSyscall {
         // this path. This is done, as otherwise, we will need to create a separate temporary directory under the new root path
         // so we can move the original root there, and then unmount that. This way saves the creation of the temporary
         // directory to put original root directory.
-        pivot_root(".", ".").map_err(|errno| {
+        pivot_root(path, path).map_err(|errno| {
             tracing::error!(?errno, ?path, "failed to pivot root to");
             errno
         })?;
