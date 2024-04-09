@@ -14,7 +14,7 @@ pub enum Stdio {
     /// This fd will be inherited from the parent application
     #[default]
     Inherit,
-    /// This fd will use pipe to/from the appliation
+    /// This fd will use pipe to/from the application
     Pipe,
     /// This fd will open /dev/null in read or write mode
     Null,
