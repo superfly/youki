@@ -7,6 +7,7 @@ use crate::{
     capabilities, hooks, namespaces::Namespaces, process::channel, rootfs::RootFS, tty,
     user_ns::UserNamespaceConfig, utils,
 };
+use libc::{FD_CLOEXEC, F_GETFD, F_SETFD};
 use nc;
 use nix::mount::MsFlags;
 use nix::sched::CloneFlags;
@@ -36,6 +37,12 @@ pub enum InitProcessError {
     MountPathReadonly(#[source] SyscallError),
     #[error("failed to mount path as masked")]
     MountPathMasked(#[source] SyscallError),
+    #[error("failed to gather mount information before moving root")]
+    MountInfo(procfs::ProcError),
+    #[error("could not find mountinfo for root mount")]
+    MissingRootMount,
+    #[error("could not mount move root")]
+    MountMoveRoot(SyscallError),
     #[error(transparent)]
     Namespaces(#[from] NamespaceError),
     #[error("failed to set hostname")]
@@ -50,6 +57,8 @@ pub enum InitProcessError {
     MissingSpec(#[from] crate::error::MissingSpecError),
     #[error("failed to setup tty")]
     Tty(#[source] tty::TTYError),
+    #[error("failed to setup stdio")]
+    Stdio(#[source] std::io::Error),
     #[error("failed to run hooks")]
     Hooks(#[from] hooks::HookError),
     #[error("failed to prepare rootfs")]
@@ -305,6 +314,32 @@ pub fn container_init_process(
             tracing::error!(?err, "failed to set up tty");
             InitProcessError::Tty(err)
         })?;
+    } else {
+        unsafe {
+            for (dest_fd, src_fd) in args.fds.iter() {
+                if src_fd == dest_fd {
+                    let flags = libc::fcntl(*src_fd, F_GETFD);
+                    if flags < 0 {
+                        return Err(InitProcessError::Stdio(std::io::Error::from_raw_os_error(
+                            flags,
+                        )));
+                    }
+                    let ret = libc::fcntl(*src_fd, F_SETFD, flags & !FD_CLOEXEC);
+                    if ret < 0 {
+                        return Err(InitProcessError::Stdio(std::io::Error::from_raw_os_error(
+                            ret,
+                        )));
+                    }
+                } else {
+                    let ret = libc::dup2(*src_fd, *dest_fd);
+                    if ret < 0 {
+                        return Err(InitProcessError::Stdio(std::io::Error::from_raw_os_error(
+                            ret,
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     apply_rest_namespaces(&namespaces, spec, syscall.as_ref())?;
@@ -343,11 +378,38 @@ pub fn container_init_process(
         // use simple chroot. Scary things will happen if you try to pivot_root
         // in the host mount namespace...
         if namespaces.get(LinuxNamespaceType::Mount)?.is_some() {
-            // change the root of filesystem of the process to the rootfs
-            syscall.pivot_rootfs(rootfs_path).map_err(|err| {
-                tracing::error!(?err, ?rootfs_path, "failed to pivot root");
-                InitProcessError::SyscallOther(err)
-            })?;
+            if procfs::mounts()
+                .map_err(InitProcessError::MountInfo)?
+                .first()
+                .ok_or(InitProcessError::MissingRootMount)?
+                .fs_vfstype
+                == "rootfs"
+            {
+                tracing::debug!(
+                    "root is a initramfs, using mount w/ MS_MOVE + chroot instead of pivot_root"
+                );
+                unistd::chdir(rootfs_path).map_err(InitProcessError::NixOther)?;
+                syscall
+                    .mount(
+                        Some(rootfs_path),
+                        Path::new("/"),
+                        None,
+                        MsFlags::MS_MOVE,
+                        None,
+                    )
+                    .map_err(InitProcessError::MountMoveRoot)?;
+                syscall.chroot(Path::new(".")).map_err(|err| {
+                    tracing::error!(?err, ?rootfs_path, "failed to chroot");
+                    InitProcessError::SyscallOther(err)
+                })?;
+                unistd::chdir("/").map_err(InitProcessError::NixOther)?;
+            } else {
+                // change the root of filesystem of the process to the rootfs
+                syscall.pivot_rootfs(rootfs_path).map_err(|err| {
+                    tracing::error!(?err, ?rootfs_path, "failed to pivot root");
+                    InitProcessError::SyscallOther(err)
+                })?;
+            }
         } else {
             syscall.chroot(rootfs_path).map_err(|err| {
                 tracing::error!(?err, ?rootfs_path, "failed to chroot");
@@ -531,7 +593,7 @@ pub fn container_init_process(
         }
     }
     #[cfg(not(feature = "libseccomp"))]
-    if proc.no_new_privileges().is_none() {
+    if proc.no_new_privileges().unwrap_or_default() {
         tracing::warn!("seccomp not available, unable to enforce no_new_privileges!")
     }
 
@@ -592,7 +654,7 @@ pub fn container_init_process(
         }
     }
     #[cfg(not(feature = "libseccomp"))]
-    if proc.no_new_privileges().is_some() {
+    if proc.no_new_privileges().unwrap_or_default() {
         tracing::warn!("seccomp not available, unable to set seccomp privileges!")
     }
 
